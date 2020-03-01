@@ -23,6 +23,9 @@ import com.google.protobuf.Descriptors.FieldDescriptor;
 import com.google.protobuf.Descriptors.FieldDescriptor.JavaType;
 import com.google.protobuf.Message;
 import com.twitter.elephantbird.util.Protobufs;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
@@ -48,6 +51,7 @@ public class ProtoSchemaConverter {
 
   private static final Logger LOG = LoggerFactory.getLogger(ProtoSchemaConverter.class);
   private final boolean parquetSpecsCompliant;
+  private HashMap<String, AtomicInteger> convertedPaths;
 
   public ProtoSchemaConverter() {
     this(false);
@@ -62,6 +66,7 @@ public class ProtoSchemaConverter {
    */
   public ProtoSchemaConverter(boolean parquetSpecsCompliant) {
     this.parquetSpecsCompliant = parquetSpecsCompliant;
+    this.convertedPaths = new HashMap<>();
   }
 
   public MessageType convert(Class<? extends Message> protobufClass) {
@@ -77,10 +82,12 @@ public class ProtoSchemaConverter {
   /* Iterates over list of fields. **/
   private <T> GroupBuilder<T> convertFields(GroupBuilder<T> groupBuilder, List<FieldDescriptor> fieldDescriptors) {
     for (FieldDescriptor fieldDescriptor : fieldDescriptors) {
-      groupBuilder =
-          addField(fieldDescriptor, groupBuilder)
-          .id(fieldDescriptor.getNumber())
-          .named(fieldDescriptor.getName());
+      Builder<? extends Builder<?, GroupBuilder<T>>, GroupBuilder<T>> groupBuilderBuilder = addField(
+          fieldDescriptor, groupBuilder);
+
+      if (groupBuilderBuilder != null) {
+        groupBuilderBuilder.id(fieldDescriptor.getNumber()).named(fieldDescriptor.getName());
+      }
     }
     return groupBuilder;
   }
@@ -97,7 +104,11 @@ public class ProtoSchemaConverter {
 
   private <T> Builder<? extends Builder<?, GroupBuilder<T>>, GroupBuilder<T>> addField(FieldDescriptor descriptor, final GroupBuilder<T> builder) {
     if (descriptor.getJavaType() == JavaType.MESSAGE) {
-      return addMessageField(descriptor, builder);
+      String messageName = descriptor.getMessageType().getFullName();
+      convertedPaths.computeIfAbsent(messageName, key->new AtomicInteger(0) ).incrementAndGet();
+      GroupBuilder<GroupBuilder<T>> msg = addMessageField(descriptor, builder);
+      convertedPaths.get(messageName).decrementAndGet();
+      return msg;
     }
 
     ParquetType parquetType = getParquetType(descriptor);
@@ -143,9 +154,18 @@ public class ProtoSchemaConverter {
     }
 
     // Plain message
-    GroupBuilder<GroupBuilder<T>> group = builder.group(getRepetition(descriptor));
-    convertFields(group, descriptor.getMessageType().getFields());
-    return group;
+    String messageName = descriptor.getMessageType().getFullName();
+    if (convertedPaths.get(messageName).get() < 6) { // Allow recursion up to 10 levels down
+      GroupBuilder<GroupBuilder<T>> group = builder.group(getRepetition(descriptor));
+      convertFields(group, descriptor.getMessageType().getFields());
+      return group;
+    } else {
+      // TODO: ADD LOGGER
+      System.out.println("SKIPPED Recursive parsing of message: " + messageName + " - Level: " +
+          convertedPaths.get(messageName).get());
+      //return builder.group(Type.Repetition.OPTIONAL);
+      return null;
+    }
   }
 
   private <T> GroupBuilder<GroupBuilder<T>> addMapField(FieldDescriptor descriptor, final GroupBuilder<T> builder) {

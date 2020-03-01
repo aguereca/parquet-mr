@@ -175,21 +175,28 @@ public class ProtoWriteSupport<T extends MessageOrBuilder> extends WriteSupport<
 
       for (FieldDescriptor fieldDescriptor: fields) {
         String name = fieldDescriptor.getName();
-        Type type = schema.getType(name);
-        FieldWriter writer = createWriter(fieldDescriptor, type);
+        try {
+          Type type = schema.getType(name);
 
-        if(writeSpecsCompliant && fieldDescriptor.isRepeated() && !fieldDescriptor.isMapField()) {
-          writer = new ArrayWriter(writer);
+          FieldWriter writer = createWriter(fieldDescriptor, type);
+
+          if (writeSpecsCompliant
+              && fieldDescriptor.isRepeated()
+              && !fieldDescriptor.isMapField()) {
+            writer = new ArrayWriter(writer);
+          } else if (!writeSpecsCompliant && fieldDescriptor.isRepeated()) {
+            // the old schemas style used to write maps as repeated fields instead of wrapping them
+            // in a LIST
+            writer = new RepeatedWriter(writer);
+          }
+
+          writer.setFieldName(name);
+          writer.setIndex(schema.getFieldIndex(name));
+
+          fieldWriters[fieldDescriptor.getIndex()] = writer;
+        } catch(InvalidRecordException error) {
+          System.out.println("error = " + error);
         }
-        else if (!writeSpecsCompliant && fieldDescriptor.isRepeated()) {
-          // the old schemas style used to write maps as repeated fields instead of wrapping them in a LIST
-          writer = new RepeatedWriter(writer);
-        }
-
-        writer.setFieldName(name);
-        writer.setIndex(schema.getFieldIndex(name));
-
-        fieldWriters[fieldDescriptor.getIndex()] = writer;
       }
     }
 
